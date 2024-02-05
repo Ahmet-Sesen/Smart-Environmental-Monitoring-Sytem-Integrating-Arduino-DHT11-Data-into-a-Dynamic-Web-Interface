@@ -1,72 +1,85 @@
-using MyWebApi.Models;
-using Microsoft.EntityFrameworkCore;
-
-internal class Program
+﻿using System.Data.SqlClient;
+using System.IO.Ports;
+class Program
 {
-    private static void Main(string[] args)
+    static void Main(string[] args)
     {
-        var builder = WebApplication.CreateBuilder(args);
+        // Arduino'dan gelen verileri okumak için SerialPort'u yapılandırın
+        SerialPort serialPort = new SerialPort("COM7", 9600); // Arduino'nun bağlı olduğu port ve baud hızını belirtin
 
-        // Add services to the container.
-        builder.Services.AddControllers();
-        // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
-        builder.Services.AddEndpointsApiExplorer();
-        builder.Services.AddSwaggerGen();
+        // SQL Server veritabanına bağlanın
+        string connectionString = "sql_database_name;Database=Myweb;Integrated Security=True;";
+        SqlConnection connection = new SqlConnection(connectionString);
 
-        // Configuration
-        builder.Configuration.AddJsonFile("appsettings.json");
-
-        // Veritabanı bağlantısı burada eklenmeli
-        builder.Services.AddDbContext<MyDbContext>(options =>
+        try
         {
-            options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"));
-        });
+            // SerialPort'u açın
+            serialPort.Open();
 
-        var app = builder.Build();
-
-        // Veritabanı işlemlerini ekleyin
-        using (var scope = app.Services.CreateScope())
-        {
-            var services = scope.ServiceProvider;
-            try
+            while (true)
             {
-                var dbContext = services.GetRequiredService<MyDbContext>();
-                dbContext.Database.EnsureCreated(); // Veritabanını oluşturur (varsa hiçbir şey yapmaz)
+                // Arduino'dan gelen veriyi satır satır okuyun
+                string rawData = serialPort.ReadLine();
+
+                // Veriyi işleyin (sıcaklık ve nem değerlerini ayırarak)
+                string cleanedData = ExtractNumbers(rawData);
+                string[] values = cleanedData.Split(',');
+                Console.WriteLine(string.Join(", ", values));
+                DateTime now = DateTime.Now;
+
+                if (values.Length == 2)
+                {
+                    if (float.TryParse(values[0], out float temperature) && float.TryParse(values[1], out float humidity))
+                    {
+                        // SQL Server veritabanına veriyi kaydedin
+                        string insertQuery = "INSERT INTO NemSicaklikVerileri (Saat, Sicaklik, Nem) VALUES (@Saat, @Sicaklik, @Nem)";
+                        SqlCommand cmd = new SqlCommand(insertQuery, connection);
+                        cmd.Parameters.AddWithValue("@Saat", now);
+                        cmd.Parameters.AddWithValue("@Sicaklik", temperature);
+                        cmd.Parameters.AddWithValue("@Nem", humidity);
+                        
+
+                        // Bağlantıyı açın ve komutu çalıştırın
+                        connection.Open();
+                        cmd.ExecuteNonQuery();
+                        connection.Close();
+
+                        Console.WriteLine($"Sıcaklık: {temperature} °C, Nem: {humidity} % veritabanına kaydedildi.");
+                    }
+                    else
+                    {
+                        Console.WriteLine("Veriyi işlerken hata oluştu.");
+                    }
+                }
             }
-            catch (Exception ex)
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Hata: {ex.Message}");
+        }
+        finally
+        {
+            // SerialPort ve SQL bağlantılarını kapatın
+            serialPort.Close();
+            if (connection.State == System.Data.ConnectionState.Open)
+                connection.Close();
+        }
+    }
+
+    // Veriyi temizlemek ve sayısal değerleri ayırmak için bir fonksiyon
+    static string ExtractNumbers(string input)
+    {
+        string result = string.Empty;
+        foreach (char c in input)
+        {
+            if (char.IsDigit(c) || c == '.' || c == ',')
             {
-                Console.WriteLine("Veritabanı hatası: " + ex.Message);
+                result += c;
             }
         }
-
-        var env = app.Environment; // env değişkenini tanımla
-        // Routing ayarları
-        app.MapControllerRoute(
-            name: "default",
-            pattern: "{controller=Home}/{action=Index}/{id?}");
-
-        // Configure the HTTP request pipeline.
-        if (env.IsDevelopment())
-        {
-            app.UseDeveloperExceptionPage();
-            app.UseSwagger();
-            app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "MyWebApi v1"));
-        }
-        else
-        {
-            app.UseExceptionHandler("/Home/Error");
-            app.UseHsts();
-        }
-
-
-        app.UseStaticFiles();
-
-        // ...
-
-        app.UseAuthorization();
-
-        app.MapControllers();
-
-        app.Run();
+        return result;
     }
 }
+
+
+
